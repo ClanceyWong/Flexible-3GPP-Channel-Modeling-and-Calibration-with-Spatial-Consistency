@@ -1,0 +1,392 @@
+classdef BaseStation < handle
+    % BASESTATION 
+    
+    properties
+        environment
+        frequency
+        cluster_wrapped
+        ID
+        initalPOS
+        Position
+        h_BS
+        Tx_power
+        
+        link_params
+        
+        corr_sos
+        corr_type = 'exp_300'; % 'comb_300'
+        
+        sector
+        
+        SpatialConsistency
+        
+        blockage
+        
+        d_cluster   % for InF
+    end
+    properties(Dependent)
+        Pos_wrapped
+    end
+    
+    methods
+        function obj = BaseStation(scenario)
+            %BASESTATION 
+            obj.h_BS        = scenario.BS_height;
+            obj.Tx_power    = scenario.Tx_power;
+%             obj.Resolution  = scenario.Resolution;
+            obj.environment = scenario.name;
+            
+            % wrapping
+            if strcmp(scenario.name,'3D-RMa') ||strcmp(scenario.name,'3D-UMa')||strcmp(scenario.name,'3D-UMi')
+                R = scenario.R;
+                switch scenario.layer_num
+                    case 3
+                        cluster = [ 0               0;
+                                    0.5*sqrt(3),  7.5;
+                                      4*sqrt(3),    3;
+                                    3.5*sqrt(3), -4.5;
+                                   -0.5*sqrt(3), -7.5;
+                                     -4*sqrt(3),   -3;
+                                   -3.5*sqrt(3),  4.5] * R;
+                         obj.cluster_wrapped = ([0, -1; 1, 0]*cluster')';
+                    case 2
+                        obj.cluster_wrapped = [   0             0;
+                                                  3,    2*sqrt(3);
+                                                4.5, -0.5*sqrt(3);
+                                                1.5, -2.5*sqrt(3);
+                                                 -3,   -2*sqrt(3);
+                                               -4.5,  0.5*sqrt(3);
+                                               -1.5,  2.5*sqrt(3)] * R;
+                    case 1
+                        obj.cluster_wrapped = [0, 0];
+                    otherwise
+                        error('Only support for wrap around when layer_num = 2 or 3');
+                end
+            end
+        end
+        
+        function getRandnGrid(obj,varargin)
+            if isempty(varargin)
+                tab = obj.CorrelationDistance();
+            else
+                tab = obj.CorrelationDistance(varargin{1});
+            end
+            if strcmp(obj.environment,'3D-UMa')
+                corr_d_LOS = tab.UMa_corr_d_LOS;
+                corr_d_NLOS = tab.UMa_corr_d_NLOS;
+                corr_d_O2I = tab.UMa_corr_d_O2I;
+            elseif strcmp(obj.environment, '3D-UMi')
+                corr_d_LOS = tab.UMi_corr_d_LOS;
+                corr_d_NLOS = tab.UMi_corr_d_NLOS;
+                corr_d_O2I = tab.UMi_corr_d_O2I;
+            elseif strcmp(obj.environment,'3D-RMa')
+                corr_d_LOS = tab.RMa_corr_d_LOS;
+                corr_d_NLOS = tab.RMa_corr_d_NLOS;
+                if isfield(tab,'RMa_corr_d_O2I')
+                    corr_d_O2I = tab.RMa_corr_d_O2I;
+                end
+            elseif strcmp(obj.environment,'3D-InH')
+                corr_d_LOS = tab.InH_corr_d_LOS;
+                corr_d_NLOS = tab.InH_corr_d_NLOS;
+            elseif strcmp(obj.environment,'InF')
+                corr_d_LOS = tab.InF_corr_d_LOS;
+                corr_d_NLOS = tab.InF_corr_d_NLOS;
+            end
+            
+            obj.corr_sos{1} = tools.sos(obj.corr_type);
+            obj.corr_sos{1}.init(corr_d_LOS);
+            obj.corr_sos{2} = tools.sos(obj.corr_type);
+            obj.corr_sos{2}.init(corr_d_NLOS);
+            if exist('corr_d_O2I','var')
+                obj.corr_sos{3} = tools.sos(obj.corr_type);
+                obj.corr_sos{3}.init(corr_d_O2I);
+            end
+        end
+        
+        function getSpatialConsistency(obj)
+            if strcmp(obj.environment,'3D-UMa')
+                Cluster_ray_specific_LOS  = 40; num_LOS  = 12;
+                Cluster_ray_specific_NLOS = 50; num_NLOS = 20;
+                Cluster_ray_specific_O2I  = 15; num_O2I  = 12;
+                LOSstate = 50;
+                O2Istate = 50;
+            elseif strcmp(obj.environment, '3D-UMi')
+                Cluster_ray_specific_LOS  = 12; num_LOS  = 12;
+                Cluster_ray_specific_NLOS = 15; num_NLOS = 19;
+                Cluster_ray_specific_O2I  = 15; num_O2I  = 12;
+                LOSstate = 50;
+                O2Istate = 50;
+            elseif strcmp(obj.environment,'3D-RMa')
+                Cluster_ray_specific_LOS  = 50; num_LOS  = 11;
+                Cluster_ray_specific_NLOS = 60; num_NLOS = 10;
+                if isfield(tab,'RMa_corr_d_O2I')
+                    Cluster_ray_specific_O2I  = 15; num_O2I  = 10;
+                end
+                LOSstate = 60;
+                O2Istate = 50;
+            elseif strcmp(obj.environment,'3D-InH')
+                Cluster_ray_specific_LOS  = 10; num_LOS  = 15;
+                Cluster_ray_specific_NLOS = 10; num_NLOS = 19;
+                LOSstate = 10;
+            elseif strcmp(obj.environment,'InF')
+                Cluster_ray_specific_LOS  = 10; num_LOS  = 25;
+                Cluster_ray_specific_NLOS = 10; num_NLOS = 25;
+                LOSstate = obj.d_cluster/2;
+            end
+            
+            obj.SpatialConsistency.LOSstate = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.LOSstate.init(LOSstate);
+            
+            if exist('O2Istate','var')
+                obj.SpatialConsistency.O2Istate = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.O2Istate.init(O2Istate);
+            end
+            
+            obj.SpatialConsistency.delay{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.delay{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.delay{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.delay{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.delay{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.delay{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.shadowing{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.shadowing{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.shadowing{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.shadowing{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.shadowing{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.shadowing{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.AOAoffset{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AOAoffset{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.AOAoffset{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AOAoffset{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.AOAoffset{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.AOAoffset{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.AODoffset{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AODoffset{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.AODoffset{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AODoffset{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.AODoffset{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.AODoffset{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.ZOAoffset{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZOAoffset{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.ZOAoffset{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZOAoffset{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.ZOAoffset{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.ZOAoffset{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.ZODoffset{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZODoffset{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.ZODoffset{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZODoffset{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.ZODoffset{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.ZODoffset{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            
+            obj.SpatialConsistency.AOAsign{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AOAsign{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.AOAsign{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AOAsign{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.AOAsign{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.AOAsign{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.AODsign{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AODsign{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.AODsign{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.AODsign{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.AODsign{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.AODsign{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.ZOAsign{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZOAsign{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.ZOAsign{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZOAsign{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.ZOAsign{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.ZOAsign{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.ZODsign{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZODsign{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS));
+            obj.SpatialConsistency.ZODsign{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.ZODsign{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.ZODsign{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.ZODsign{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I));
+            end
+            
+            obj.SpatialConsistency.randomCoupling1{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling1{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS*20));
+            obj.SpatialConsistency.randomCoupling1{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling1{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS*20));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.randomCoupling1{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.randomCoupling1{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I*20));
+            end
+            
+            obj.SpatialConsistency.randomCoupling2{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling2{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS*20));
+            obj.SpatialConsistency.randomCoupling2{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling2{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS*20));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.randomCoupling2{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.randomCoupling2{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I*20));
+            end
+            
+            obj.SpatialConsistency.randomCoupling3{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling3{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS*20));
+            obj.SpatialConsistency.randomCoupling3{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomCoupling3{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS*20));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.randomCoupling3{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.randomCoupling3{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I*20));
+            end
+            
+            obj.SpatialConsistency.XPR{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.XPR{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS*20));
+            obj.SpatialConsistency.XPR{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.XPR{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS*20));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.XPR{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.XPR{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I*20));
+            end
+            
+            obj.SpatialConsistency.randomPhase{1} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomPhase{1}.init(repmat(Cluster_ray_specific_LOS,1,num_LOS*80));
+            obj.SpatialConsistency.randomPhase{2} = tools.sos(obj.corr_type);
+            obj.SpatialConsistency.randomPhase{2}.init(repmat(Cluster_ray_specific_NLOS,1,num_NLOS*80));
+            if exist('Cluster_ray_specific_O2I','var')
+                obj.SpatialConsistency.randomPhase{3} = tools.sos(obj.corr_type);
+                obj.SpatialConsistency.randomPhase{3}.init(repmat(Cluster_ray_specific_O2I,1,num_O2I*80));
+            end
+            
+        end
+        
+        function fig = shadowingPlot(obj)
+            fig = figure;
+            d   = -50:0.5:50;
+            [x,y] = meshgrid(d,d);
+            pos = zeros(3,size(x,1),size(x,2));
+            pos(1,:,:) = x;
+            pos(2,:,:) = y;
+            pos = reshape(pos,3,[]);
+            shadowing = obj.corr_sos{1}.randn(pos);
+            shadowing = reshape(shadowing(:,1),size(x,1),size(x,2));
+            mesh(x,y,shadowing);
+        end
+        
+        
+        function init_link_params(obj,link)
+            if isempty(obj.link_params)
+                indx = 1;
+            else
+                indx = length(obj.link_params)+1;
+            end
+            obj.link_params{indx}.UEID              = link.UE.ID;
+            obj.link_params{indx}.BS_pos_wrap       = link.BS_pos_wrap;
+            obj.link_params{indx}.O2I               = link.O2I;
+            obj.link_params{indx}.bLOS              = link.bLOS;
+            obj.link_params{indx}.K                 = link.K;        % rice factor [1x1]
+            obj.link_params{indx}.tau_n             = link.tau_n;    % cluster delay [1xN]
+            obj.link_params{indx}.tau_n_LOS         = link.tau_n_LOS;% cluster delay [1xN]
+            obj.link_params{indx}.Pn                = link.Pn;       % cluster power [1xN]
+            obj.link_params{indx}.strong_cluster_id = link.strong_cluster_id;
+            obj.link_params{indx}.theta_n_m_ZOA     = link.theta_n_m_ZOA;
+            obj.link_params{indx}.theta_n_m_ZOD     = link.theta_n_m_ZOD;
+            obj.link_params{indx}.phi_n_m_AOA       = link.phi_n_m_AOA;
+            obj.link_params{indx}.phi_n_m_AOD       = link.phi_n_m_AOD;
+            obj.link_params{indx}.theta_LOS_ZOA     = link.theta_LOS_ZOA;
+            obj.link_params{indx}.theta_LOS_ZOD     = link.theta_LOS_ZOD;
+            obj.link_params{indx}.phi_LOS_AOA       = link.phi_LOS_AOA;
+            obj.link_params{indx}.phi_LOS_AOD       = link.phi_LOS_AOD;
+            obj.link_params{indx}.XPR_n_m           = link.XPR_n_m;
+            obj.link_params{indx}.PL                = link.PL;
+            obj.link_params{indx}.SF                = link.SF;
+        end
+        %% get and set function
+        function out = get.Pos_wrapped(obj)
+            out = repmat(obj.Position, size(obj.cluster_wrapped,1), 1) + obj.cluster_wrapped;
+        end
+
+        function tab = CorrelationDistance(obj, varargin)
+            % PARAMETERS_TAB
+            if isempty(varargin)
+                tab.UMi_corr_d_LOS  = [10, 15, 7, 8, 8, 12, 12];    % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_NLOS = [13, 10, 10, 9, 10, 10];     % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_O2I  = [7, 10, 11, 17, 25, 25];      % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.UMa_corr_d_LOS  = [37, 12, 30, 18, 15, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_NLOS = [50, 40, 50, 50, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_O2I  = [7, 10, 11, 17, 25, 25];          % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.RMa_corr_d_LOS  = [37, 40, 50, 25, 35, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.RMa_corr_d_NLOS = [120, 36, 30, 40, 50, 50];       % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.RMa_corr_d_O2I  = [120, 36, 30, 40, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.InH_corr_d_LOS  = [10, 4, 8, 7, 5, 4, 4];           % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.InH_corr_d_NLOS = [6, 5, 3, 3, 4, 4];              % SF/DS/ASD/ASA/ZSD/ZSA
+                
+                tab.InF_corr_d_LOS = [10 10 10 10 10 10 10];
+                tab.InF_corr_d_NLOS = [10 10 10 10 10 10];
+%                 tab.InF_corr_d_LOS = [15 32 50 10 10 10 10];
+%                 tab.InF_corr_d_NLOS = [30 52 13 13 20 20];
+                
+            elseif varargin{1}== 38900
+                fc = obj.frequency/1e9;
+                tab.UMi_corr_d_LOS  = [10, 15, 7, 8, 8, (-4.95*log10(1+fc)+12.65), (-3.76*log10(1+fc)+11.92)];    % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_NLOS = [13, 10, 10, 9, 10, 10];     % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_O2I  = [7, 10, 11, 17, 25, 25];      % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.UMa_corr_d_LOS  = [37, 12, 30, 18, 15, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_NLOS = [50, 40, 50, 50, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_O2I  = [7, 10, 11, 17, 25, 25];          % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.RMa_corr_d_LOS  = [37, 40, 50, 25, 35, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.RMa_corr_d_NLOS = [120, 36, 30, 40, 50, 50];       % SF/DS/ASD/ASA/ZSD/ZSA
+%                 tab.RMa_corr_d_O2I  = [120, 36, 30, 40, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.InH_corr_d_LOS  = [10, 4, 8, 7, 5, 3, 3];           % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.InH_corr_d_NLOS = [6, 5, 3, 3, 3, 3];              % SF/DS/ASD/ASA/ZSD/ZSA
+            else
+                tab.UMi_corr_d_LOS  = [10, 15, 7, 8, 8, 12, 12];    % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_NLOS = [13, 10, 10, 9, 10, 10];     % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMi_corr_d_O2I  = [7, 10, 11, 17, 25, 25];      % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.UMa_corr_d_LOS  = [37, 12, 30, 18, 15, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_NLOS = [50, 40, 50, 50, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.UMa_corr_d_O2I  = [7, 10, 11, 17, 25, 25];          % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.RMa_corr_d_LOS  = [37, 40, 50, 25, 35, 15, 15];     % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.RMa_corr_d_NLOS = [120, 36, 30, 40, 50, 50];       % SF/DS/ASD/ASA/ZSD/ZSA
+                tab.RMa_corr_d_O2I  = [120, 36, 30, 40, 50, 50];        % SF/DS/ASD/ASA/ZSD/ZSA
+
+                tab.InH_corr_d_LOS  = [10, 4, 8, 7, 5, 4, 4];           % SF/K/DS/ASD/ASA/ZSD/ZSA
+                tab.InH_corr_d_NLOS = [6, 5, 3, 3, 4, 4];              % SF/DS/ASD/ASA/ZSD/ZSA
+                
+                tab.InF_corr_d_LOS = [10 10 10 10 10 10 10];
+                tab.InF_corr_d_NLOS = [10 10 10 10 10 10];
+%                 tab.InF_corr_d_LOS = [15 32 50 10 10 10 10];
+%                 tab.InF_corr_d_NLOS = [30 52 13 13 20 20];
+            end
+        end
+    end
+end
+
